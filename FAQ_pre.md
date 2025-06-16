@@ -13625,9 +13625,392 @@ std::vector: 1 2 3
 - **每次 `++value` 等价于 `value += 1.0`**
 - 如果连续多次递增，可能因浮点舍入误差导致结果不精确（尤其是 `value` 较大时）。
 
+## 180. Folly 库
 
+[Folly](https://github.com/facebook/folly) (acronymed loosely after Facebook Open Source Library) is a library of **C++17** components designed with practicality and efficiency in mind. **Folly contains a variety of core library components used extensively at Facebook**. In particular, it's often a dependency of Facebook's other open source C++ efforts and place where those projects can share code.
 
+It complements (as opposed to competing against) offerings such as Boost and of course `std`. In fact, we embark on defining our own component only when something we need is either not available, or does not meet the needed performance profile. We endeavor to remove things from folly if or when `std` or Boost obsoletes them.
 
+Performance concerns permeate much of Folly, sometimes leading to designs that are more idiosyncratic than they would otherwise be (see e.g. `PackedSyncPtr.h`, `SmallLocks.h`). Good performance at large scale is a unifying theme in all of Folly.
+
+主要组件可以参考 [docs](https://github.com/facebook/folly/tree/main/folly/docs) 和 [overview](https://github.com/facebook/folly/blob/main/folly/docs/Overview.md)。
+
+### 1. FBstring
+
+string 常见的三种实现方式：
+
+1. eager-copy
+2. COW
+3. SSO
+
+很有意思，通过 folly 的设计，我们也能窥见一些对 `string` 可行的优化。
+
+1. 根据字符串的大小，使用不同的内存模型
+   * small：SSO 优化，直接分配在栈上，不用动态分配，并且局部性更好
+   * medium：动态分配，但是使用 eager-copy，并发安全
+   * large：动态分配，使用 COW，以优化拷贝的开销，但是引用计数在并发环境下会带来额外开销
+2. 针对内存分配器进行优化，提到了 [一篇论文](http://goog-perftools.sourceforge.net/doc/tcmalloc.html)，看不太懂...
+3. 对末尾 `\0` 优化，因为这里有 C++ 字符串转化为 C 字符串的需要，所以需要处理 `\0` 的问题。
+   * folly 使用的是 lazy-append `\0`，也即只有在需要 C++ 转 C 或者取得底层数据时才添加 `\0`，例如调用 `data()` 或 `c_str()`，从而避免每次修改字符串时 `\0` 带来的额外开销（特别是 `push_back`）
+4. `realloc` 的处理：
+   * 当字符串的内存利用率很少时（`size * 2 < capacity`），也即使用率不到 50% 时，放弃使用 `realloc`（因为 `realloc` 需要拷贝全部内存，但是其中一半多是无效内容），而是通过 `free` + `malloc` + `copy` 的方式（只拷贝有效内容）重新分配内存，减少拷贝开销。
+   * 当内存使用率大于 50% 时，则使用 `realloc`，并寄希望于 `realloc` 可以直接合并后面的空闲内存（依赖于内存分配器？），以避免拷贝开销
+5. `find` 的优化：这里似乎是针对 FaceBook 的常用场景做了特定优化
+
+参考自：
+
+> 1. [std::string的Copy-on-Write：不如想象中美好](https://www.cnblogs.com/promise6522/archive/2012/03/22/2412686.html)
+> 2. [漫步Facebook开源C++库folly(1)：string类的设计](https://www.cnblogs.com/promise6522/archive/2012/06/05/2535530.html)
+> 3. [C++ folly库解读（一） Fbstring —— 一个完美替代std::string的库](https://zhuanlan.zhihu.com/p/348614098)
+> 4. [Legality of COW std::string implementation in C++11](https://stackoverflow.com/questions/12199710/legality-of-cow-stdstring-implementation-in-c11)
+
+### 2. small_vector
+
+> https://zhuanlan.zhihu.com/p/353485606
+
+## 181. string::data
+
+> referenec:
+>
+> * [std::basic_string<CharT,Traits,Allocator>::data](https://en.cppreference.com/w/cpp/string/basic_string/data)
+
+```cpp
+const CharT* data() const;
+CharT* data() noexcept;
+```
+
+Returns a pointer to the **underlying array** serving as character storage. The pointer is such that the range。
+
+The returned array is **null-terminated**, that is, **`data()` and [`c_str()`](https://en.cppreference.com/w/cpp/string/basic_string/c_str.html) perform the same function**.
+
+If [empty()](https://en.cppreference.com/w/cpp/string/basic_string/empty.html) returns true, the pointer points to a single null character.
+
+## 182. `auto&` 和 `auto&&`
+
+在 C++ 中，`auto` 关键字用于类型推导，它让编译器根据初始化表达式来确定变量的类型。而 `&` 和 `&&` 是引用声明符，它们与 `auto` 结合使用时，会影响类型推导的行为，特别是涉及到**引用折叠（reference collapsing）**的规则。
+
+### `auto&` (左值引用推导)
+
+当你在 `auto` 后面加上 `&` 时，你是在告诉编译器，你希望推导出的类型是一个**左值引用**。
+
+**工作原理：**
+
+- **如果初始化表达式是左值：** `auto&` 会推导出该左值的引用类型。例如，如果 `x` 是 `int` 类型，那么 `auto& ref = x;` 会推导出 `ref` 的类型是 `int&`。
+- **如果初始化表达式是右值：** 编译会失败。因为左值引用不能绑定到右值（除非是 `const` 左值引用，但 `auto&` 默认不是 `const`）。
+
+**主要用途：**
+
+1. 绑定到左值：
+
+    最常见的用法是绑定到一个现有的左值对象，以便可以通过引用修改它。
+
+   ```cpp
+   int x = 10;
+   auto& ref_x = x; // ref_x 的类型是 int&
+   ref_x = 20; // x 现在是 20
+   std::cout << x << std::endl; // 输出 20
+   
+   std::vector<int> myVec = {1, 2, 3};
+   for (auto& elem : myVec) { // elem 的类型是 int&，可以在循环中修改元素
+       elem *= 2;
+   }
+   // myVec 现在是 {2, 4, 6}
+   ```
+
+2. 避免拷贝：
+
+    当处理大对象时，使用 `auto&` 可以避免不必要的拷贝，提高性能。
+
+   ```cpp
+   std::string long_string = "very long string...";
+   auto& view = long_string; // view 是 std::string&，没有拷贝
+   ```
+
+3. **泛型代码中的类型推导：** 在模板或泛型编程中，`auto&` 确保你处理的是一个引用，而不是拷贝。
+
+### `auto&&` (万能引用/转发引用推导)
+
+当你在 `auto` 后面加上 `&&` 时，这称为**“万能引用”（Universal Reference）**或**“转发引用”（Forwarding Reference）**。这是一个非常强大的特性，它的行为取决于初始化表达式是左值还是右值。
+
+**工作原理（基于引用折叠规则）：**
+
+- 如果初始化表达式是左值：`auto&&` 会推导出该左值的左值引用类型。
+  - 根据引用折叠规则：`Lvalue& &&` 折叠为 `Lvalue&`。
+  - 例如，如果 `x` 是 `int` 类型，`auto&& ref = x;` 会推导出 `ref` 的类型是 `int&`。
+- 如果初始化表达式是右值：`auto&&` 会推导出该右值的右值引用类型。
+  - 根据引用折叠规则：`Rvalue&& &&` 折叠为 `Rvalue&&`。
+  - 例如，`auto&& ref = 10;` 会推导出 `ref` 的类型是 `int&&`。
+
+**主要用途：**
+
+1. 完美转发（Perfect Forwarding）：
+
+    这是 `auto&&` 最重要的用途。在模板函数中，结合 `std::forward`，它可以无损地转发参数的值类别（左值保持左值，右值保持右值），这对于通用函数模板的编写至关重要。
+
+   ```cpp
+   template<typename T>
+   void process(T&& arg) { // arg 是一个万能引用
+       some_other_function(std::forward<T>(arg)); // 完美转发
+   }
+   
+   int main() {
+       int x = 10;
+       process(x);          // arg 被推导为 int&， 并转发为 int&
+       process(20);         // arg 被推导为 int&&，并转发为 int&&
+   }
+   ```
+
+2. 避免拷贝和处理临时对象：
+
+    当你需要处理一个既可能是左值也可能是右值的表达式时，`auto&&` 提供了一个统一的接口。
+
+   ```cpp
+   // 假设有一个函数返回一个可能是左值或右值的对象
+   std::string get_string_lvalue() { return "hello"; }
+   std::string& get_string_rvalue(std::string& s) { s = "world"; return s; }
+   
+   // 使用 auto&& 接收结果
+   auto&& s1 = get_string_lvalue(); // s1 是 std::string&&
+   std::string temp = "original";
+   auto&& s2 = get_string_rvalue(temp); // s2 是 std::string&
+   
+   // 注意：这里 s1 是一个绑定到临时对象的右值引用，延长了临时对象的生命周期。
+   // s2 是一个绑定到左值 temp 的左值引用。
+   ```
+
+3. 范围-based for 循环：
+
+    在 C++11 引入的范围-based for 循环中，`auto&&` 经常被隐式地用于遍历容器，以优化性能并处理各种元素类型（包括临时对象）。
+
+   ```cpp
+   // 即使 std::vector<bool>::reference 是一个代理对象，
+   // auto&& 也能正确处理，因为它能绑定到临时对象
+   for (auto&& elem : some_vector_of_bools) {
+       // ...
+   }
+   ```
+
+### 总结比较
+
+| 特性         | `auto&`                               | `auto&&` (万能引用)                                          |
+| ------------ | ------------------------------------- | ------------------------------------------------------------ |
+| **推导行为** | **只绑定左值**，推导为左值引用 `T&`。 | **绑定左值或右值**。如果初始化是左值，推导为左值引用 `T&`；如果初始化是右值，推导为右值引用 `T&&`。 |
+| **错误情况** | 初始化表达式为右值时编译错误。        | 无特定错误情况（除非绑定不兼容类型）。                       |
+| **主要用途** | 修改现有左值对象，避免拷贝。          | **完美转发**，处理左值和右值，统一接口。                     |
+| **性能**     | 避免拷贝。                            | 避免拷贝。                                                   |
+| **语义**     | 明确表示你需要一个对现有对象的引用。  | 表示你希望保持被绑定表达式的值类别（左值性或右值性）。       |
+
+## 182. Deducing this(Explicit Object Parameter) [C++ 23]
+
+> reference:
+>
+> * [C++23’s Deducing this: what it is, why it is, how to use it](https://devblogs.microsoft.com/cppblog/cpp23-deducing-this/)
+
+[Deducing `this`](https://wg21.link/p0847) (P0847) is a C++23 feature which **gives a new way of specifying non-static member functions**. Usually when we call an object’s member function, the object is *implicitly* passed to the member function, despite not being present in the parameter list. P0847 allows us to make this parameter *explicit*, giving it a name and `const`/reference qualifiers. For example:
+
+``` cpp
+struct implicit_style {
+    void do_something(); //object is implicit
+};
+
+struct explicit_style {
+    void do_something(this explicit_style& self); //object is explicit
+};
+```
+
+The explicit object parameter is distinguished by the keyword `this` placed before the type specifier, and is **only valid for the first parameter of the function**.
+
+The reasons for allowing this may not seem immediately obvious, but a bunch of additional features fall out of this almost by magic. These include **de-quadruplication of code(`const&, const&&, &, &&`)**, **recursive lambdas**, **passing `this` by value**, and a version of the [**CRTP**](https://www.fluentcpp.com/2017/05/12/curiously-recurring-template-pattern/) which doesn’t require the base class to be templated on the derived class.
+
+This post will walk through an overview of the design, then many of the cases you can use this feature for in your own code.
+
+For the rest of this blog post I’ll refer to the feature as **“explicit object parameters”**, as it makes more sense as a feature name than “deducing `this`“. Explicit object parameters are supported in MSVC as of Visual Studio 2022 version 17.2. A good companion to this post is Ben Deane’s talk [Deducing `this` Patterns](https://www.youtube.com/watch?v=jXf--bazhJw) from CppCon.
+
+> 简而言之，Deducing this 就是可以显式声明一个参数来接受调用对象本身（即 this），格式为 `this + 类型 + 参数名`。并且和常规的成员函数一样，这里的 this 也必须作为第一个成员函数参数。也因此，deducing this 也被称为**“explicit object parameter”**。
+>
+> 不过需要注意的是，通过 deducing this 声明的对象并不等价于 this 指针，因为 this 表示的是一个指向调用对象本身的指针，而这里声明的的直接就是对象本身。以下面的例子为例，简而言之，`self == *this`。
+>
+> ``` cpp
+> struct S {
+>     // 隐式 this 参数（传统方式）
+>     void traditional_member_function() const & {
+>         // this 的类型是 const S*
+>     }
+> 
+>     // 显式 object 参数
+>     void deduced_this_member_function(this auto& self) {
+>         // self 的类型是 S& (如果 S 是左值)
+>         // self 的类型是 const S& (如果 S 是 const 左值)
+>     }
+> 
+>     // 你也可以更具体地指定类型
+>     void deduced_this_const_ref(this const S& self) {
+>         // self 的类型是 const S&
+>     }
+> 
+>     void deduced_this_rvalue_ref(this S&& self) {
+>         // self 的类型是 S&&
+>     }
+> };
+> ```
+
+### 1. 减少代码重复
+
+如果我们想要实现一个 `operator[]`，一般需要分别实现 const 和非 const 的版本，但现在只需要一个函数来实现 `operator[]`：
+
+``` cpp
+template<typename T>
+struct Vector {
+public:
+    // T& operator[](size_t idx) { return data_[idx]; } // this*
+    // const T& operator[](size_t idx) const { return data_[idx]; } // const this*
+    auto operator[](this auto& self, size_t idx) -> decltype(self.data_[idx])  { return self.data_[idx]; }
+
+private:
+    T *data_;
+    int size_;
+    int capacity_;
+}
+```
+
+### 2. 递归 lambda
+
+``` cpp
+#include <iostream>
+#include <string>
+#include <functional>
+
+using namespace std;
+
+/* 注意下面这种写法是错误的，因为在捕获 factorial_v0 时，它的类型还没有确定
+ *  auto factorial_v0 = [&factorial_v0](int n) -> int {
+ *       return n <= 1 ? 1 : n * factorial_v0(n - 1);
+ *  };
+ * 显然的，factorial_v0 的返回类型和参数列表都是捕获列表的后面
+ * 一种解决方案是使用 functional，这是因为在声明 function 对象时
+ * 我们需要将函数签名作为模板参数传入 function
+ */
+function<int(int)> factorial_v1 = [](int n) -> int {
+    return n <= 1 ? 1 : n * factorial_v1(n - 1);
+};
+
+// 使用 deducing this，这里 self 就是 lambda 对象本身
+auto factorial_v2 = [](this auto &&self, int n) -> int {
+    return n <= 1 ? 1 : n * self(n - 1);
+};
+
+// 模板元编程
+template<int N>
+struct factorial_v3 {
+    static const int value = N * factorial_v3<N - 1>::value;
+};
+
+template<>
+struct factorial_v3<0> {
+    static const int value = 1;
+};
+
+int main()
+{
+    cout << factorial_v1(4) << endl;
+    cout << factorial_v2(4) << endl;
+    cout << factorial_v3<4>::value << endl;
+    return 0;
+}
+```
+
+### 3. CRTP
+
+CRTP (Curiously Recurring Template Pattern，奇异递归模板模式) 是 C++ 中一种重要的 **编译期多态** 技术。
+
+它是一种 C++ 中的惯用法，通过让一个类模板的基类是这个类模板的特化版本来实现。简单来说，就是**派生类作为基类的模板参数**。
+
+通过 CRTP，我们可以在编译期实现类似 **虚函数** 的功能，而 **不需要运行时虚函数表的开销**。基类可以通过 `static_cast<Derived*>(this)` 调用派生类的方法。这比传统的运行时多态（通过虚函数）更高效。
+
+传统 CRTP 实现如下：
+
+``` cpp
+template<typename Derived>
+class Base {
+public:
+    void interface() {
+        static_cast<Derived*>(this)->impl();
+    }
+    void impl() { // 默认实现
+        std::cout << "Base implement";
+    }
+};
+
+class Derived1 : public Base<Derived1> {
+public:
+    void impl() {
+        std::cout << "Derived 1 implement";
+    }
+};
+
+class Derived2 : public Base<Derived2> {
+public:
+    void impl() {
+        std::cout << "Derived 2 implement";
+    }
+};
+
+int main()
+{
+    Derived1 d1;
+    d1.interface();
+    Derived1 d2;
+    d2.interface();
+    return 0;
+}
+```
+
+1. `Derived` 继承自 `Base<Derived>` - 这就是"奇异递归"名称的由来
+2. `Base` 通过 `static_cast<Derived*>(this)` 获得派生类指针
+3. 调用被正确分派到派生类的方法
+
+传统 CRTP 的痛点：
+
+- 需要显式使用 `static_cast`
+- 容易写错模板参数
+- 代码可读性较差
+
+使用 `deducing this` 优化 CRTP：
+
+``` cpp
+// 不需要模板
+class Base {
+public:
+    void interface(this auto&& self) {
+        //  不需要static_cast
+        self.impl();
+    }
+    
+    void impl() { // 默认实现
+        std::cout << "Base implementation\n";
+    }
+};
+
+class Derived : public Base {
+public:
+    void impl() {
+        std::cout << "Derived implementation\n";
+    }
+};
+
+int main()
+{
+    Derived d;
+    d.interface();
+    return 0;
+}
+```
+
+## 183. C++ ABI
+
+很复杂，看了一遍，只能说一知半解吧：
+
+* https://zhuanlan.zhihu.com/p/692886292
 
 
 

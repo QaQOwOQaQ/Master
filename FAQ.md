@@ -1,143 +1,38 @@
-## 180. Folly 库
-
-[Folly](https://github.com/facebook/folly) (acronymed loosely after Facebook Open Source Library) is a library of C++17 components designed with practicality and efficiency in mind. **Folly contains a variety of core library components used extensively at Facebook**. In particular, it's often a dependency of Facebook's other open source C++ efforts and place where those projects can share code.
-
-It complements (as opposed to competing against) offerings such as Boost and of course `std`. In fact, we embark on defining our own component only when something we need is either not available, or does not meet the needed performance profile. We endeavor to remove things from folly if or when `std` or Boost obsoletes them.
-
-Performance concerns permeate much of Folly, sometimes leading to designs that are more idiosyncratic than they would otherwise be (see e.g. `PackedSyncPtr.h`, `SmallLocks.h`). Good performance at large scale is a unifying theme in all of Folly.
-
-主要组件可以参考 [docs](https://github.com/facebook/folly/tree/main/folly/docs) 和 [overview](https://github.com/facebook/folly/blob/main/folly/docs/Overview.md)。
-
-### 1. FBstring
-
-
-
-
-
-
-
-很有意思，通过 folly 的设计，我们也能窥见一些对 `string` 可行的优化。
-
-1. 根据字符串的大小，使用不同的内存模型
-   * small：SSO 优化，直接分配在栈上，不用动态分配，并且局部性更好
-   * medium：动态分配，但是使用 eager-copy，并发安全
-   * large：动态分配，使用 COW，以优化拷贝的开销，但是引用计数在并发环境下会带来额外开销
-2. 针对内存分配器进行优化，提到了 [一篇论文](http://goog-perftools.sourceforge.net/doc/tcmalloc.html)，看不太懂...
-3. 对末尾 `\0` 优化，因为这里有 C++ 字符串转化为 C 字符串的需要，所以需要处理 `\0` 的问题。
-   * folly 使用的是 lazy-append `\0`，也即只有在需要 C++ 转 C 或者取得底层数据时才添加 `\0`，例如调用 `data()` 或 `c_str()`，从而避免每次修改字符串时 `\0` 带来的额外开销（特别是 `push_back`）
-4. `realloc` 的处理：
-   * 当字符串的内存利用率很少时（`size * 2 < capacity`），也即使用率不到 50% 时，放弃使用 `realloc`（因为 `realloc` 需要拷贝全部内存，但是其中一半多是无效内容，），而是通过 `free` + `malloc` + `copy` 的方式（只拷贝有效内容）重新分配内存，减少拷贝开销。
-   * 当内存使用率大于 50% 时，则使用 `realloc`，并寄希望于 `realloc` 可以直接合并后面的空闲内存，以避免拷贝开销
-5. `find` 的优化：这里似乎是针对 FaceBook 的常用场景做了特定优化？
-
-参考自：
-
-> 1. https://www.cnblogs.com/promise6522/archive/2012/06/05/2535530.html
-> 2. https://zhuanlan.zhihu.com/p/348614098
-
-### 2. small_vector
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-## C++ ABI
-
-https://zhuanlan.zhihu.com/p/692886292
-
-## C++ 代码究竟膨胀在哪里？
+## 184. C++ 代码究竟膨胀在哪里？
 
 https://zhuanlan.zhihu.com/p/686296374
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 ## arrregates、POD、trivial、Standard Layout
 
@@ -186,16 +81,6 @@ For simple data types use the [`is_standard_layout`](http://en.cppreference.com/
 [P0767R1: Deprecate POD](https://www.open-std.org/jtc1/sc22/wg21/docs/papers/2017/p0767r1.html)
 
 ##  `std::function` 源码分析
-
-##  `libstdc++` 和 `libc++`
-
-## 头文件 or 源文件
-
-一般来说，将 inline 函数和 constexpr 函数的定义放在头文件中。
-
-一般来说，如果非成员函数是类接口的组成部分，则这些函数的声明应该与类放在同一个文件内、
-
-对于一个函数来说，noexcept 说明必须出现在该函数的所有声明语句和定义语句中。
 
 ## 默认初始化、值初始化
 
@@ -399,16 +284,6 @@ For simple data types use the [`is_standard_layout`](http://en.cppreference.com/
 这与 C++ 社区的一般实践相符，因为 **public 继承** 更符合面向对象的 **"is-a"** 关系，而 **private/protected 继承** 是特殊场景下的工具。
 
 
-
-## 函数标识符
-
-* virtual
-* inline
-* static
-* override?
-* final?
-* const?
-* &?
 
 ## 动态链接库的命名冲突
 
