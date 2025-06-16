@@ -11,6 +11,20 @@
 * 概念
 * 解决方案
 
+> 如何设计一个缓存策略，可以动态缓存热点数据呢？
+
+由于数据存储受限，系统并不是将所有数据都需要存放到缓存中的，而**只是将其中一部分热点数据缓存起来**，所以我们要设计一个热点数据动态缓存的策略。
+
+热点数据动态缓存的策略总体思路：**通过数据最新访问时间来做排名，并过滤掉不常访问的数据，只留下经常访问的数据**。
+
+以电商平台场景中的例子，现在要求只缓存用户经常访问的 Top 1000 的商品。具体细节如下：
+
+- 先通过缓存系统做一个排序队列（比如存放 1000 个商品），系统会根据商品的访问时间，更新队列信息，越是最近访问的商品排名越靠前；
+- 同时系统会定期过滤掉队列中排名最后的 200 个商品，然后再从数据库中随机读取出 200 个商品加入队列中；
+- 这样当请求每次到达的时候，会先从队列中获取商品 ID，如果命中，就根据 ID 再从另一个缓存数据结构中读取实际的商品信息，并返回。
+
+在 Redis 中可以用 zadd 方法和 zrange 方法来完成排序队列和获取 200 个商品的操作。
+
 ## 二、Redis 持久化
 
 > reference: 
@@ -164,6 +178,8 @@ Redis 确实是以单线程架构被大家所知，但是这个单线程指的�
 
 ## 七、过期删除策略
 
+### 1. Redis 的过期删除策略
+
 每当我们对一个 key 设置了过期时间时，Redis  会把该 key 带上过期时间存储到一个**过期字典**（expires dict）中，也就是说「过期字典」保存了数据库中所有 key 的过期时间。
 
 当我们查询一个 key 时，Redis 首先检查该 key 是否存在于过期字典中：
@@ -180,6 +196,30 @@ Redis 确实是以单线程架构被大家所知，但是这个单线程指的�
 前面介绍了三种过期删除策略，每一种都有优缺点，仅使用某一个策略都不能满足实际需求。
 
 所以， **Redis 选择「惰性删除+定期删除」这两种策略配和使用**，以求在合理使用 CPU 时间和避免内存浪费之间取得平衡。
+
+### 2. Redis 持久化对过期键的处理
+
+Redis 持久化文件有两种格式：RDB（Redis Database）和 AOF（Append Only File），下面我们分别来看过期键在这两种格式中的呈现状态。
+
+RDB 文件分为两个阶段，RDB 文件生成阶段和加载阶段。
+
+- **RDB 文件生成阶段**：从内存状态持久化成 RDB（文件）的时候，会对 key 进行过期检查，**过期的键「不会」被保存到新的 RDB 文件中**，因此 Redis 中的过期键不会对生成新 RDB 文件产生任何影响。
+
+- **RDB 加载阶段**：RDB 加载阶段时，要看服务器是主服务器还是从服务器，分别对应以下两种情况：
+
+- - **如果 Redis 是「主服务器」运行模式的话，在载入 RDB 文件时，程序会对文件中保存的键进行检查，过期键「不会」被载入到数据库中**。所以过期键不会对载入 RDB 文件的主服务器造成影响；
+  - **如果 Redis 是「从服务器」运行模式的话，在载入 RDB 文件时，不论键是否过期都会被载入到数据库中**。但由于主从服务器在进行数据同步时，从服务器的数据会被清空。所以一般来说，过期键对载入 RDB 文件的从服务器也不会造成影响。
+
+AOF 文件分为两个阶段，AOF 文件写入阶段和 AOF 重写阶段。
+
+- **AOF 文件写入阶段**：当 Redis 以 AOF 模式持久化时，**如果数据库某个过期键还没被删除，那么 AOF 文件会保留此过期键，当此过期键被删除后，Redis 会向 AOF 文件追加一条 DEL 命令来显式地删除该键值**。
+- **AOF 重写阶段**：执行 AOF 重写时，会对 Redis 中的键值对进行检查，**已过期的键不会被保存到重写后的 AOF 文件中**，因此不会对 AOF 重写造成任何影响。
+
+### 3. Redis 主从模式中，对过期键会如何处理
+
+当 Redis 运行在主从模式下时，**从库不会进行过期扫描，从库对过期的处理是被动的**。也就是即使从库中的 key 过期了，如果有客户端访问从库时，依然可以得到 key 对应的值，像未过期的键值对一样返回。
+
+从库的过期键处理依靠主服务器控制，**主库在 key 到期时，会在 AOF 文件里增加一条 del 指令，同步到所有的从库**，从库通过执行这条 del 指令来删除过期的 key。
 
 ## 八、内存淘汰策略
 
@@ -3434,48 +3474,545 @@ Redis 后续版本又支持各种针对特定场景优化的数据类型，它�
 - GEO（3.2 版新增）：存储地理位置信息的场景，比如滴滴叫车；
 - Stream（5.0 版新增）：消息队列，相比于基于 List 类型实现的消息队列，有这两个特有的特性：自动生成全局唯一消息ID，支持以消费组形式消费数据。
 - JSON
-- Vector Set
-- Probabilistic Data Structures
 
+## 十六、Redis 简介
 
+### 1. Redis 是什么
 
+For developers, who are building **real-time data-driven applications**, Redis is the preferred, fastest, and most feature-rich **cache**, **data structure server**, and **document** and **vector query engine**.
 
+> 向量查询引擎（Vector Query Engine）是一种专门用于存储、管理和高效检索向量数据的系统。在AI时代，它变得越来越重要，特别是对于处理非结构化数据（如文本、图像、音频、视频等）的应用。
+>
+> 以下是关于向量查询引擎的一些关键点：
+>
+> 1. **什么是向量？**
+>    - 在向量查询引擎的上下文中，向量是数据的一种数值表示。通过机器学习模型（如嵌入模型或深度学习网络），各种类型的数据（文字、图像、声音等）可以被转换成一系列数字，形成一个 **高维度的向量**。
+>    - 这些向量捕获了 **原始数据的语义和上下文信息**。如果两个数据点在 **语义上相似**，那么它们对应的向量在**多维空间中的距离就会很近**。
+> 2. **工作原理：**
+>    - **向量化（Vectorization/Embedding）：** 首先，原始数据（例如一段文本、一张图片）会通过一个预训练的机器学习模型转换成高维度的数值向量（也称为**嵌入**，embeddings）。
+>    - **存储与索引：** 这些向量被存储在向量数据库或向量索引中。为了实现高效的检索，向量查询引擎会使用特定的索引技术（如ANN算法，Approximate Nearest Neighbor，近似最近邻算法），来组织和索引这些向量。
+>    - **查询：** 当用户发起查询时，查询本身也会被转换成一个向量。然后，向量查询引擎会在存储的向量集合中查找与查询向量最“接近”的向量。这种“接近”通常通过计算 **向量之间的距离**（如余弦相似度或欧几里得距离）来衡量。
+>    - **返回结果：** 引擎会返回那些与查询向量最相似的数据对应的原始内容。
+> 3. **为什么重要？**
+>    - **处理非结构化数据：** 传统的数据库和查询方法在处理非结构化数据时效率低下。向量查询引擎能够理解数据的“含义”，而不仅仅是关键词匹配，因此能够更好地处理图像、音频和文本等复杂数据类型。
+>    - **语义搜索：** 实现了语义搜索，即理解用户查询的意图，而不仅仅是字面上的关键词。例如，搜索“智能手机”也可能返回“手机”或“移动设备”的结果。
+>    - **推荐系统：** 通过比较用户行为或商品特征的 **向量相似度**，可以实现更精准的推荐。
+>    - **问答系统和生成式AI (LLMs/RAG)：** 在大型语言模型（LLMs）的应用中，向量查询引擎是实现检索增强生成（RAG）的关键。它可以从大量文档中快速检索相关信息，并将其提供给LLM以生成更准确、更具上下文的回答。
+>    - **多模态搜索：** 可以实现跨不同数据类型（例如，用文字搜索图片，或用图片搜索类似图片）的搜索。
+> 4. **Redis作为向量查询引擎：**
+>    - 正如你提到的，Redis 正在被开发者广泛用于构建实时数据驱动应用，并作为一种功能丰富的缓存、数据结构服务器和文档/向量查询引擎。
+>    - Redis 能够存储向量数据，并提供高效的查询功能，特别是对于实时、低延迟的相似性搜索场景，这使得它在构建AI应用时非常有吸引力。
 
+![REDIS_INTRODUCE](https://github.com/QaQOwOQaQ/picx-images-hosting/raw/master/image.3d51s908ah.png)
 
+Redis 是一种基于内存的数据库，对数据的读写操作都是在内存中完成，因此**读写速度非常快**，常用于**缓存，消息队列、分布式锁等场景**。
 
+Redis 提供了多种数据类型来支持不同的业务场景，比如 String(字符串)、Hash(哈希)、 List (列表)、Set(集合)、Zset(有序集合)、Bitmaps（位图）、HyperLogLog（基数统计）、GEO（地理信息）、Stream（流），并且对数据类型的操作都是**原子性**的，因为执行命令由单线程负责的，不存在并发竞争的问题。
 
+除此之外，Redis 还支持**事务 、持久化、Lua 脚本、多种集群方案（主从复制模式、哨兵模式、切片机群模式）、发布/订阅模式，内存淘汰机制、过期删除机制**等等。
 
+### 2. Redis 和 Memcached 有什么区别
 
+很多人都说用 Redis 作为缓存，但是 Memcached 也是基于内存的数据库，为什么不选择它作为缓存呢？要解答这个问题，我们就要弄清楚 Redis 和 Memcached 的区别。 Redis 与 Memcached **共同点**：
 
+1. 都是基于内存的数据库，一般都用来当做缓存使用。
+2. 都有过期策略。
+3. 两者的性能都非常高。
 
+Redis 与 Memcached **区别**：
 
+- Redis 支持的数据类型更丰富（String、Hash、List、Set、ZSet），而 Memcached 只支持最简单的 key-value 数据类型；
+- Redis 支持数据的持久化，可以将内存中的数据保持在磁盘中，重启的时候可以再次加载进行使用，而 Memcached 没有持久化功能，数据全部存在内存之中，Memcached 重启或者挂掉后，数据就没了；
+- Redis 原生支持集群模式，Memcached 没有原生的集群模式，需要依靠客户端来实现往集群中分片写入数据；
+- Redis 支持发布订阅模型、Lua 脚本、事务等功能，而 Memcached 不支持；
 
+## 十七、切片集群
 
+当 Redis 缓存数据量大到一台服务器无法缓存时，就需要使用 **Redis 切片集群**（Redis Cluster ）方案，它将数据分布在不同的服务器上，以此来降低系统对单主节点的依赖，从而提高 Redis 服务的读写性能。
 
+Redis Cluster 方案采用哈希槽（Hash Slot），来处理数据和节点之间的映射关系。在 Redis Cluster 方案中，**一个切片集群共有 16384 个哈希槽**，这些哈希槽类似于数据分区，每个键值对都会根据它的 key，被映射到一个哈希槽中，具体执行过程分为两大步：
 
+- 根据键值对的 key，按照 CRC16 算法计算一个 16 bit 的值。
+- 再用 16bit 值对 16384 取模，得到 0~16383 范围内的模数，每个模数代表一个相应编号的哈希槽。
 
+接下来的问题就是，这些哈希槽怎么被映射到具体的 Redis 节点上的呢？有两种方案：
 
+- **平均分配：** 在使用 cluster create 命令创建 Redis 集群时，Redis 会自动把所有哈希槽平均分布到集群节点上。比如集群中有 9 个节点，则每个节点上槽的个数为 16384/9 个。
+- **手动分配：** 可以使用 cluster meet 命令手动建立节点间的连接，组成集群，再使用 cluster addslots 命令，指定每个节点上的哈希槽个数。
 
+### 1. 集群脑裂
 
+先来理解集群的脑裂现象，这就好比一个人有两个大脑，那么到底受谁控制呢？
 
+那么在 Redis 中，集群脑裂产生数据丢失的现象是怎样的呢？
 
+在 Redis 主从架构中，部署方式一般是「一主多从」，主节点提供写操作，从节点提供读操作。 如果主节点的网络突然发生了问题，它与所有的从节点都失联了，但是此时的主节点和客户端的网络是正常的，这个客户端并不知道 Redis 内部已经出现了问题，还在照样的向这个失联的主节点写数据（过程A），此时这些数据被旧主节点缓存到了缓冲区里，因为主从节点之间的网络问题，这些数据都是无法同步给从节点的。
 
+这时，哨兵也发现主节点失联了，它就认为主节点挂了（但实际上主节点正常运行，只是网络出问题了），于是哨兵就会在「从节点」中选举出一个 leader 作为主节点，这时集群就有两个主节点了 —— **脑裂出现了**。
 
+然后，网络突然好了，哨兵因为之前已经选举出一个新主节点了，它就会把旧主节点降级为从节点（A），然后从节点（A）会向新主节点请求数据同步，**因为第一次同步是全量同步的方式，此时的从节点（A）会清空掉自己本地的数据，然后再做全量同步。所以，之前客户端在过程 A 写入的数据就会丢失了，也就是集群产生脑裂数据丢失的问题**。
 
+总结一句话就是：由于网络问题，集群节点之间失去联系。主从数据不同步；重新平衡选举，产生两个主服务。等网络恢复，旧主节点会降级为从节点，再与新主节点进行同步复制的时候，由于会从节点会清空自己的缓冲区，所以导致之前客户端写入的数据丢失了。
 
+> 解决方案
 
+当主节点发现从节点下线或者通信超时的总数量大于阈值时，那么禁止主节点进行写数据，直接把错误返回给客户端。
 
+在 Redis 的配置文件中有两个参数我们可以设置：
 
+- min-slaves-to-write x，主节点必须要有至少 x 个从节点连接，如果小于这个数，主节点会禁止写数据。
+- min-slaves-max-lag x，主从数据复制和同步的延迟不能超过 x 秒，如果超过，主节点会禁止写数据。
 
+我们可以把 min-slaves-to-write 和 min-slaves-max-lag 这两个配置项搭配起来使用，分别给它们设置一定的阈值，假设为 N 和 T。
 
+这两个配置项组合后的要求是，主库连接的从库中至少有 N 个从库，和主库进行数据复制时的 ACK 消息延迟不能超过 T 秒，否则，主库就不会再接收客户端的写请求了。
 
+即使原主库是假故障，它在假故障期间也无法响应哨兵心跳，也不能和从库进行同步，自然也就无法和从库进行 ACK 确认了。这样一来，min-slaves-to-write 和 min-slaves-max-lag 的组合要求就无法得到满足，**原主库就会被限制接收客户端写请求，客户端也就不能在原主库中写入新数据了**。
 
+**等到新主库上线时，就只有新主库能接收和处理客户端请求，此时，新写的数据会被直接写到新主库中。而原主库会被哨兵降为从库，即使它的数据被清空了，也不会有新数据丢失。**
 
+> 举个例子
 
+假设我们将 min-slaves-to-write 设置为 1，把 min-slaves-max-lag 设置为 12s，把哨兵的 down-after-milliseconds 设置为 10s，主库因为某些原因卡住了 15s，导致哨兵判断主库客观下线，开始进行主从切换。
 
+同时，因为原主库卡住了 15s，没有一个从库能和原主库在 12s 内进行数据复制，原主库也无法接收客户端请求了。
 
+这样一来，主从切换完成后，也只有新主库能接收请求，不会发生脑裂，也就不会发生数据丢失的问题了。
 
+## 十八、LFU 算法
 
+LFU 算法通过频率思想，解决了 LRU 以下问题：
+
+1. 某个时间段经常访问但之后不活跃的数据不会因为计数器增加的太多而 “永远不会被淘汰”
+2. 一次读取了大量数据时，这些数据不会在缓存中长期存在
+
+Redis 的 LFU 算法主要通过以下几个关键点实现：
+
+1. **访问频率计数器 (`lfu_freq`)：**
+   - 每个 Redis 对象（`robj`）内部都包含一个 `lru` 字段，当使用 LFU 策略时，这个字段的一部分被用来存储一个8位的频率计数器（`lfu_freq`）。
+   - 这个计数器记录了键被访问的近似频率。
+2. **计数器衰减 (Decrementation):**
+   - 为了防止那些很久以前很热门但现在不活跃的键一直霸占缓存，Redis 会周期性地对所有键的 `lfu_freq` 进行衰减。
+   - 衰减的频率和幅度由 `lfu-decay-time` 配置项控制。当一个键很长时间未被访问时，它的 `lfu_freq` 值会逐渐下降。
+3. **计数器增长 (Incrementation):**
+   - 当一个键被访问时，它的 `lfu_freq` 计数器会增加。
+   - 增加的幅度并不是简单的 +1，而是采用了一种 **对数增长** 的策略。这意味着，从低频率到高频率的增长速度会更快，而从高频率到更高频率的增长速度会变慢。这是为了避免那些被频繁访问的键的计数器增长过快，导致它们几乎永远不会被淘汰。这种增长策略由 `LFU_INIT_VAL` 和 `LFU_MAX_UPPER_BOUND` 结合随机性实现，使得低频率的计数器更容易达到较高值。
+4. **淘汰策略：**
+   - 当需要淘汰键时（例如，内存达到上限），Redis 会遍历一部分随机选择的键（由 `maxmemory-samples` 配置项控制）。
+   - 在这些样本键中，它会选择 `lfu_freq` 值最小的键进行淘汰。如果 `lfu_freq` 相同，则选择 `lru` 时间戳更早（即更久没有访问）的键进行淘汰。
+
+### 源码分析 (简化和关键部分)
+
+Redis 的 LFU 实现主要涉及到 `object.c` (对象管理)、`db.c` (数据库操作)、`evict.c` (淘汰策略) 等文件。
+
+为了更好地理解，我们主要关注以下几个关键函数和宏定义：
+
+**1. `lfu_freq` 的管理 (在 `object.c` 和 `server.h` 中)**
+
+在 `server.h` 中，`robj` 结构体：
+
+```cpp
+// server.h
+typedef struct redisObject {
+    unsigned type:4;        /* Object type. */
+    unsigned encoding:4;    /* Object encoding. */
+    unsigned lru:24;        /* LRU time (relative to server.lruclock) or
+                                LFU data (least significant 8 bits frequency
+                                and most significant 16 bits access time). */
+    int refcount;           /* Reference count. */
+    void *ptr;              /* Pointer to the actual data structure. */
+} robj;
+
+// lru 字段在高位存储 lru_clock，在 LFU 模式下低位存储 lfu_freq
+// LFU_FRQ_BITS 是 8， LFU_LRU_BITS 是 16
+#define LFU_FRQ_BITS 8
+#define LFU_LRU_BITS 16
+#define LFU_MAX_LOG_COUNT ((1<<LFU_FRQ_BITS)-1) // 最大频率计数器值 255
+#define LFU_DECAY_TIME_BITS 16 // 衰减时间在lru字段中占据的位数
+
+// 用于获取 LFU 频率和访问时间
+#define LFU_FREQ(o) ((o)->lru & LFU_MAX_LOG_COUNT)
+#define LFU_TIME(o) (((o)->lru >> LFU_FRQ_BITS) & ((1<<LFU_LRU_BITS)-1))
+
+// 用于设置 LFU 频率和访问时间
+#define LFU_SET_FREQ(o,freq) do { \
+    (o)->lru = (((o)->lru & (~LFU_MAX_LOG_COUNT)) | freq); \
+} while(0)
+#define LFU_SET_TIME(o,lfu_time) do { \
+    (o)->lru = ((o)->lru & ~( ((1<<LFU_LRU_BITS)-1) << LFU_FRQ_BITS )) | \
+                ( (lfu_time) << LFU_FRQ_BITS ); \
+} while(0)
+```
+
+**2. 计数器增长函数 (`server.h` 或 `db.c` 中)**
+
+这个函数是 LFU 算法的核心，它控制了 `lfu_freq` 的增长逻辑。
+
+```cpp
+// server.h 或 db.c
+/* LFU parameters */
+#define LFU_INIT_VAL 5
+#define LFU_MAX_UPPER_BOUND 255 // lfu_freq 的最大值
+
+/* LFU logarithmic counter.
+ * We use a logarithmic counter with an 8 bit field.
+ * The value is incremented using probabilities, so the chance of incrementing
+ * a counter with a higher value is lower.
+ * The approximate probabilities are:
+ * 100% at 0, 1/2 at 1, 1/4 at 2, 1/8 at 3 ... 1/128 at 7.
+ * and so on.
+ *
+ * This function is used to update the LFU counter of a Redis object.
+ * It takes the old counter value and increments it according to the
+ * LFU_LOG_FACTOR server configuration.
+ * The maximum value of the counter is 255.
+ */
+uint8_t LFUIncr(uint8_t counter) {
+    if (counter == LFU_MAX_LOG_COUNT) return LFU_MAX_LOG_COUNT; // 达到最大值不再增加
+    unsigned long r = random() & 0xFF; // 获取一个随机数
+    // server.lfu_log_factor 默认为 10
+    // log(counter * server.lfu_log_factor / 255) / log(2)
+    // 这是 Redis LFU 计数器增长的核心逻辑
+    // 越大的 counter，越难通过随机数判断，因此增长越慢
+    if (r < server.lfu_log_factor) { // 小概率增加，保证高频率增长慢
+        counter++;
+    }
+    return counter;
+}
+```
+
+**3. 访问时更新 LFU (在 `db.c` 的 `lookupKey` 等函数中)**
+
+当键被访问时，会调用 `LFUIncr` 更新其 LFU 计数。
+
+```cpp
+// db.c (简化后的伪代码)
+robj *lookupKey(redisDb *db, sds key, int flags) {
+    dictEntry *de = dictFind(db->dict,key);
+    if (de) {
+        robj *val = dictGetVal(de);
+        // 如果启用了 LFU 策略
+        if (server.maxmemory_policy & MAXMEMORY_FLAG_LFU) {
+            unsigned long lfu_time = server.lru_clock & LFU_LRU_BITS_MASK;
+            unsigned long lfu_freq = LFU_FREQ(val);
+
+            // 更新 LFU 频率
+            LFU_SET_FREQ(val, LFUIncr(lfu_freq));
+            // 更新 LFU 访问时间戳
+            LFU_SET_TIME(val, lfu_time);
+        }
+        return val;
+    } else {
+        return NULL;
+    }
+}
+```
+
+**4. 衰减 LFU 计数器 (`evict.c` 中的 `estimateObjectIdleTime` 和 `freeMemoryIfNeeded` 相关逻辑)**
+
+Redis 会在每次执行内存淘汰或者周期性任务时，对 LFU 计数器进行衰减。
+
+```cpp
+// evict.c (伪代码，表示衰减逻辑)
+// 计算一个键的近似空闲时间，并根据这个时间衰减 LFU 频率
+unsigned long LFUDecrAndGetFreq(robj *o) {
+    unsigned long lfu_time = LFU_TIME(o);
+    unsigned long now = server.lru_clock & LFU_LRU_BITS_MASK; // 当前时间戳
+
+    // 计算上次访问至今的“空闲时间”
+    // 注意：这里的 LFU_LRU_BITS 是 16 位，所以时间是循环的
+    if (now < lfu_time) now += (1<<LFU_LRU_BITS); // 处理时间戳溢出
+    unsigned long idle_time = (now - lfu_time);
+
+    // 根据 idle_time 和 lfu_decay_time 配置计算衰减步长
+    // 比如 server.lfu_decay_time 默认为 1 (天)
+    // 如果 idle_time 超过 lfu_decay_time，则每次衰减 1
+    // 具体的衰减逻辑比这复杂，涉及到 server.lfu_decay_time 和 log(idle_time / decay_time)
+    long num_decay_steps = (idle_time / server.lfu_decay_time);
+    if (num_decay_steps > 0) {
+        unsigned long old_freq = LFU_FREQ(o);
+        unsigned long new_freq = old_freq - num_decay_steps; // 简单表示衰减
+        if (new_freq < LFU_INIT_VAL) new_freq = LFU_INIT_VAL; // 频率不会低于初始值
+
+        LFU_SET_FREQ(o, new_freq);
+        return new_freq;
+    } else {
+        return LFU_FREQ(o); // 不需要衰减
+    }
+}
+```
+
+在 `freeMemoryIfNeeded()` 中进行淘汰时，会调用上述逻辑：
+
+```cpp
+// evict.c (简化伪代码)
+int freeMemoryIfNeeded(void) {
+    // ...
+    // 在选择淘汰的键时，会对样本进行 LFUDecrAndGetFreq 计算
+    // 选出 LFU 频率最低的键
+    // ...
+    dictEntry *de = NULL;
+    long best_lfu_freq = -1;
+    mstime_t best_idle_time = -1; // 用于频率相同时的 LRU 辅助判断
+
+    // 随机采样若干键
+    for (int i = 0; i < server.maxmemory_samples; i++) {
+        // ... 获取一个随机键 val
+        robj *val = dictGetVal(de_sample);
+        long this_freq = LFUDecrAndGetFreq(val); // 获取衰减后的频率
+        mstime_t this_idle = estimateObjectIdleTime(val); // 获取 LRU 辅助判断的空闲时间
+
+        if (de == NULL || this_freq < best_lfu_freq ||
+            (this_freq == best_lfu_freq && this_idle > best_idle_time))
+        {
+            // 如果找到 LFU 频率更低的，或者 LFU 频率相同但更久未访问的
+            best_lfu_freq = this_freq;
+            best_idle_time = this_idle;
+            de = de_sample;
+        }
+    }
+    // 淘汰选出的 de 键
+    // ...
+}
+```
+
+### 总结 Redis LFU 的特点
+
+- **近似性：** Redis 的 LFU 并不是严格意义上的 LFU，它通过概率性计数器增长和周期性衰减来近似模拟真实访问频率，以在性能和准确性之间取得平衡。
+- **内存效率：** 每个键只需要额外8位来存储频率计数器，以及16位来存储最后访问时间，非常节省内存。
+- **随机采样：** 淘汰时不是遍历所有键，而是随机选择一部分键进行比较，大大降低了淘汰操作的开销，尤其是在大型数据集中。
+- **衰减机制：** 有效地解决了纯 LFU 算法中“历史热门”键可能长期霸占缓存的问题，使得缓存能够适应数据访问模式的变化。
+
+## 十九、Redis 如何实现延迟队列
+
+延迟队列是指把当前要做的事情，往后推迟一段时间再做。延迟队列的常见使用场景有以下几种：
+
+- 在淘宝、京东等购物平台上下单，超过一定时间未付款，订单会自动取消；
+- 打车的时候，在规定时间没有车主接单，平台会取消你的单并提醒你暂时没有车主接单；
+- 点外卖的时候，如果商家在10分钟还没接单，就会自动取消订单；
+
+在 Redis 可以使用有序集合（ZSet）的方式来实现延迟消息队列的，ZSet 有一个 Score 属性可以用来存储延迟执行的时间。
+
+使用 zadd score1 value1 命令就可以一直往内存中生产消息。再利用 zrangebysocre 查询符合条件的所有待处理的任务， 通过循环执行队列任务即可。
+
+![img](https://github.com/QaQOwOQaQ/picx-images-hosting/raw/master/image.4xussgcez9.png)
+
+## 二十、Pileline
+
+Redis 的管道技术是 Redis 客户端优化与 Redis 服务器通信效率的一种机制。它的核心思想是**批量发送命令，批量接收响应**，从而显著减少网络往返时间（RTT）对性能的影响。
+
+### 为什么需要管道技术？
+
+Redis 是一个基于内存的键值存储，其单命令的执行速度非常快，通常在微秒级别。然而，即使命令执行再快，客户端与服务器之间的网络通信也会引入延迟。这个延迟主要来自：
+
+1. **网络往返时间 (RTT - Round Trip Time)：** 数据包从客户端发送到服务器，再从服务器返回到客户端所花费的时间。即使在局域网内，这个时间也可能是毫秒级别的。
+2. **系统调用开销：** 客户端发送命令和接收响应时，需要进行多次系统调用（如 `send()` 和 `recv()`），这也会带来额外的开销。
+
+如果没有管道，每次客户端发送一个命令，都需要等待服务器返回响应后才能发送下一个命令。这个过程是串行的，每次命令执行都会包含一个 RTT。
+
+**示例（没有管道）：**
+
+假设你要执行 100 个 `SET` 命令：
+
+1. 客户端发送 `SET key1 value1`
+2. 等待服务器响应 `OK` (1 RTT)
+3. 客户端发送 `SET key2 value2`
+4. 等待服务器响应 `OK` (1 RTT) ... (重复 100 次)
+
+总共需要 100 次 RTT。如果每个 RTT 是 1 毫秒，那么仅仅网络延迟就会消耗 100 毫秒，而实际命令执行时间可能只有几微秒。
+
+### 管道的工作原理
+
+管道技术改变了这种串行模式，使其变为批处理模式：
+
+1. **客户端缓冲区：** 客户端并不立即发送每个命令到网络，而是将多个命令暂时放入一个内存缓冲区。
+2. **一次性发送：** 当缓冲区达到一定数量（或客户端显式调用 flush 操作）时，客户端将缓冲区中的所有命令一次性打包发送给 Redis 服务器。
+3. **服务器处理：** Redis 服务器接收到这一批命令后，会按照接收的顺序，**逐个执行**这些命令。Redis 是单线程的，所以这些命令的执行仍然是串行的，但对客户端来说是透明的。
+4. **一次性返回响应：** 服务器在执行完所有命令后，会将所有命令的执行结果按顺序打包，一次性返回给客户端。
+5. **客户端解析：** 客户端接收到所有响应后，再按顺序解析出每个命令的结果。
+
+**示例（使用管道）：**
+
+执行 100 个 `SET` 命令：
+
+1. 客户端将 100 个 `SET` 命令放入缓冲区。
+2. 客户端一次性发送这 100 个命令到服务器。
+3. 服务器逐个执行这 100 个命令。
+4. 服务器将 100 个结果打包，一次性返回给客户端。
+5. 客户端接收并解析这 100 个结果。
+
+总共只需要 1 次 RTT。这极大地提高了每秒可以执行的命令数量（即吞吐量）。
+
+### 管道的优势
+
+- **减少网络往返时间 (RTT)：** 这是最主要的优势，可以显著提高命令的吞吐量。
+- **减少系统调用开销：** 批量发送和接收数据可以减少客户端和服务器端的系统调用次数。
+- **提高资源利用率：** 更有效地利用网络带宽和服务器处理能力。
+
+### 管道的局限性/注意事项
+
+1. **原子性：** 管道**不保证原子性**。管道中的命令是按顺序执行的，但如果 Redis 服务器在执行批处理的中间崩溃，那么部分命令可能已经执行，而另一部分没有。要保证原子性，需要使用 Redis 事务（`MULTI`/`EXEC`）。
+2. **错误处理：** 如果管道中的某个命令执行失败，Redis 仍然会执行后续的命令，并在最终的响应中返回该命令的错误信息。客户端需要逐一检查每个命令的响应来判断是否成功。
+3. **内存占用：** 客户端在发送所有命令之前，需要将它们全部缓冲在内存中。如果管道中的命令数量非常大，可能会占用较多的客户端内存。
+4. **长连接：** 管道技术通常依赖于客户端与服务器之间的长连接。
+5. **不适用于强实时性场景：** 如果你需要在每个命令执行后立即获得结果并根据结果决定下一个操作，那么管道就不适用。管道适用于需要一次性发送大量命令并等待所有结果的场景。
+
+### 客户端库对管道的支持
+
+几乎所有的 Redis 客户端库都支持管道功能，通常通过 `pipeline()` 或 `multi()` 等方法来实现。
+
+**Python 示例 (使用 `redis-py` 库):**
+
+```python
+import redis
+
+# 连接 Redis
+r = redis.Redis(host='localhost', port=6379, db=0)
+
+# 开启管道
+pipe = r.pipeline()
+
+# 将多个命令添加到管道中
+pipe.set('mykey1', 'value1')
+pipe.set('mykey2', 'value2')
+pipe.get('mykey1')
+pipe.incr('mycounter')
+pipe.incr('mycounter')
+
+# 执行管道中的所有命令，并获取所有结果
+results = pipe.execute()
+
+# 打印结果
+print(results)
+# 预期输出可能类似于: [True, True, b'value1', 1, 2]
+# 注意：True 表示 SET 命令成功，b'value1' 是 GET 的结果，数字是 INCR 的结果
+```
+
+**总结来说：**
+
+Redis 管道技术是提高 Redis 应用程序性能的关键优化手段之一。通过减少网络往返时间，它能够显著提升单位时间内处理的命令数量，非常适合需要批量操作 Redis 的场景，如数据导入、批量更新等。
+
+要注意的是，管道技术本质上是 **客户端提供的功能**，而非 Redis 服务器端的功能。
+
+## 二十一、Redis 事务
+
+Redis 事务是一组命令的集合，它允许你将多个 Redis 命令打包起来，一次性地、顺序地、排他地执行。尽管它被称为“事务”，但与传统关系型数据库（如 MySQL）中的事务有所不同，Redis 事务不具备完全的 ACID 特性。
+
+### Redis 事务的特性
+
+1. **原子性（Atomicity）**：
+   - **命令提交阶段**：**Redis 事务不保证原子性。**如果在事务执行过程中，某个命令出错（例如，对字符串类型执行列表操作），**只有报错的命令不会执行**，其他命令会正常执行。
+   - **命令组队阶段**：如果在事务组队过程中（即在 `MULTI` 和 `EXEC` 之间）有语法错误，那么整个事务队列中的所有命令都不会被执行。
+   - **无回滚机制**：Redis 事务没有回滚机制。一旦事务开始执行，即使有命令执行失败，Redis 也不会撤销之前已经执行成功的命令。这是与关系型数据库事务最大的区别。
+2. **一致性（Consistency）**：
+   - Redis 事务通常不直接提供关系型数据库中那种严格的约束和回滚机制来保证数据一致性。
+   - 由于 Redis 是单线程的，在事务执行期间，不会有其他客户端的命令插入到事务中间执行，这在一定程度上保证了事务内操作的顺序性和隔离性，从而间接维护了数据在事务执行期间的可见性。
+3. **持久性（Durability）**：
+   - Redis 本身是内存数据库，数据存储在内存中。事务本身与持久化机制没有直接关系。
+   - Redis 的持久化（RDB 快照或 AOF 日志）是独立于事务的，它们负责将内存中的数据定期或异步地写入磁盘，以防止数据丢失。
+4. **隔离性（Isolation）**：
+   - Redis 是单线程模型，所有命令都是“串行”执行的。这意味着在一个事务中的所有命令在 `EXEC` 命令执行后，会按照它们被放入队列的顺序依次执行，并且在整个事务执行过程中，不会被其他客户端的命令打断。
+   - 但是，Redis 事务没有隔离级别的概念。在事务执行之前，客户端可以看到所有已提交的数据。在事务执行期间，事务内的操作在 `EXEC` 之前并不会真正执行，所以其他客户端看不到事务内的中间状态，直到 `EXEC` 命令执行完毕，所有修改才会对外可见。
+
+> Redis 为什么不支持事务回滚？
+>
+> Redis 官方文档解释如下：
+>
+> ![back](https://github.com/QaQOwOQaQ/picx-images-hosting/raw/master/image.32i7zulpcs.png)
+>
+> 大概的意思是，作者不支持事务回滚的原因有以下两个：
+>
+> - 他认为 Redis 事务的执行时，错误通常都是编程错误造成的，这种错误通常只会出现在开发环境中，而很少会在实际的生产环境中出现，所以他认为没有必要为 Redis 开发事务回滚功能；
+> - 不支持事务回滚是因为这种复杂的功能和 Redis 追求的简单高效的设计主旨不符合。
+>
+> 这里不支持事务回滚，指的是不支持事务运行时错误的事务回滚。
+
+### Redis 事务的命令
+
+Redis 事务主要通过以下四个命令来控制：
+
+- **`MULTI`**：用于标记一个事务的开始。在此命令之后，所有客户端发送的命令都会被放入一个命令队列中，而不是立即执行。
+  - 示例：`MULTI`
+- **`EXEC`**：用于执行所有在 `MULTI` 命令之后入队的命令。一旦 `EXEC` 被调用，队列中的所有命令会按顺序执行。
+  - 示例：`EXEC`
+- **`DISCARD`**：用于取消一个事务。如果在 `EXEC` 之前调用 `DISCARD`，那么所有在 `MULTI` 之后入队的命令都会被清空，事务被取消。
+  - 示例：`DISCARD`
+- **`WATCH [key [key ...]]`**：用于监控一个或多个键。如果在 `EXEC` 命令执行之前，任何被 `WATCH` 的键被其他客户端修改了，那么当前事务将会被取消，`EXEC` 命令会返回一个空列表（nil）。这被称为乐观锁机制，用于防止竞争条件。
+  - 示例：`WATCH mykey`
+- **`UNWATCH`**：用于取消所有对键的监控。通常在事务被 `EXEC` 或 `DISCARD` 之后会自动执行 `UNWATCH`，但你也可以手动调用它来取消监控。
+  - 示例：`UNWATCH`
+
+### Redis 事务的工作流程
+
+1. **开启事务**：客户端发送 `MULTI` 命令，Redis 返回 `OK`。
+2. **命令入队**：客户端发送一系列命令，这些命令不会立即执行，而是被添加到事务队列中。对于每个成功入队的命令，Redis 返回 `QUEUED`。
+3. 执行事务或取消事务：
+   - **执行**：客户端发送 `EXEC` 命令。Redis 会按顺序执行事务队列中的所有命令，并返回一个包含所有命令执行结果的列表。
+   - **取消**：客户端发送 `DISCARD` 命令。事务队列被清空，事务被取消。
+
+### 示例
+
+**成功的事务：**
+
+代码段
+
+```shell
+MULTI
+SET key1 "value1"
+LPUSH mylist "item1"
+INCR counter
+EXEC
+```
+
+- `EXEC` 命令会返回一个包含 `SET`、`LPUSH` 和 `INCR` 命令执行结果的列表。
+
+**带有 `WATCH` 的事务（乐观锁）：**
+
+代码段
+
+```shell
+WATCH balance # 监控 balance 键
+GET balance   # 获取当前余额，假设为 100
+# 在这里，如果另一个客户端修改了 balance 的值，比如扣款
+MULTI
+DECRBY balance 10 # 扣除 10
+INCRBY total_expense 10 # 增加总支出
+EXEC
+```
+
+- 如果 `WATCH` 的 `balance` 键在 `EXEC` 之前没有被其他客户端修改，那么 `DECRBY` 和 `INCRBY` 会被执行。
+- 如果 `balance` 键在 `EXEC` 之前被修改了，`EXEC` 会返回 `(nil)`，表示事务执行失败，需要客户端重新尝试。
+
+**命令组队阶段错误：**
+
+代码段
+
+```shell
+MULTI
+SET mykey "hello"
+LPOP mykey # 错误：对字符串类型执行列表操作
+EXEC
+```
+
+- 在这种情况下，`LPOP mykey` 在入队时就会被 Redis 识别为错误（尽管返回 `QUEUED`），但在 `EXEC` 时，整个事务队列中的所有命令都不会被执行。
+
+**命令执行阶段错误：**
+
+代码段
+
+```
+MULTI
+SET mykey "hello"
+RPUSH mykey "item" # 错误：对字符串类型执行列表操作，但是此命令在 EXEC 时才报错
+INCR counter
+EXEC
+```
+
+- 在这种情况下，`SET mykey "hello"` 会成功执行，但 `RPUSH mykey "item"` 会执行失败，`INCR counter` 会继续执行成功。Redis 返回的结果列表中会显示 `RPUSH` 命令的错误信息，但不会影响其他命令的执行。
+
+### 总结
+
+Redis 事务提供了一种将多个命令打包执行的机制，确保这些命令在执行期间不会被其他客户端的命令中断，从而实现一种原子性的操作序列（在执行阶段）。然而，它不提供关系型数据库那样严格的事务回滚机制，因此在设计使用 Redis 事务的应用程序时，需要充分理解其特性，并结合业务逻辑进行适当的错误处理。`WATCH` 命令提供了一种乐观锁的机制，可以用于处理并发场景下数据一致性的问题。
 
 
 
