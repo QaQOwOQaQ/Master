@@ -14012,7 +14012,122 @@ int main()
 
 * https://zhuanlan.zhihu.com/p/692886292
 
+## 184. heap 自定义排序规则
 
+注意，**heap(priority_queue)** 三个模板参数传入的都应该是类型，因为 heap 是一个类模板。
+
+下面以实现小顶堆为例，介绍一些自定义 heap 排序规则的方法：
+
+### 1. 自定义结构体
+
+创建一个结构体，并在结构体内重载 `operator<`：
+
+``` cpp
+struct Node {
+    int val;
+    bool operator<(const Node &rhs) const {
+        return val > rhs.val;
+    }
+};
+priority_queue<Node> min_heap;
+```
+
+### 2. 函数对象
+
+heap 默认以 `operator<` 进行排序，我们可以将其修改为 `operator>`，这里可以直接使用标准库提供的函数对象：
+
+``` cpp
+priority_queue<int, vector<int>, greater<int>> min_heap;
+```
+
+或者我们自己实现一个函数对象：
+
+``` cpp
+template<typename T>
+struct Greater {
+    bool operator()(const T &a, const T &b) const {
+        return a > b;
+    }
+};
+
+priority_queue<int, vector<int>, Greater<int>> min_heap;
+```
+
+### 3. 函数指针
+
+如果我们是自己手写的函数而不是函数对象，则稍微复杂一些：
+
+``` cpp
+template<typename T>
+bool cmp(const T &a, const T &b) {
+    return a > b;
+}
+
+priority_queue<int, vector<int>, decltype(&cmp<int>)> min_heap(&cmp<int>);
+```
+
+这里需要注意，第三个模板参数要传入 `decltype(&cmp<int>)` 而不是 `decltype(cmp<int>)`，前者表示的是 “函数的类型”，后者表示的是 “可调用对象”（函数指针） 的类型。而 `priority_queue` 希望接受的是 **可调用对象** 的类型。
+
+另外就是，不同于函数对象，在这里我们需要在声明的对象中传入可调用对象本身。至于具体原因，我们可以看一下源代码：
+
+``` cpp
+template <typename _Tp, typename _Sequence = vector<_Tp>,
+          typename _Compare = less<typename _Sequence::value_type> >
+class priority_queue {
+public:
+    typedef typename _Sequence::value_type value_type;
+    typedef typename _Sequence::reference reference;
+    typedef typename _Sequence::const_reference const_reference;
+    typedef typename _Sequence::size_type size_type;
+    typedef _Sequence container_type;
+    typedef _Compare value_compare;
+
+protected:
+    _Sequence c;
+    _Compare comp;
+
+public:
+    // 默认构造函数
+    // is_default_constructible 确保 _Compare 和 _Seq 可以默认构造
+    template<typename _Seq = _Sequence, typename _Requires = typename
+        enable_if<__and_<is_default_constructible<_Compare>, 
+            is_default_constructible<_Seq>>::value>::type> 
+    priority_queue()
+    : c(), comp() { }
+
+    // 指定比较器和容器的构造函数
+    explicit
+    priority_queue(const _Compare& __x, const _Sequence& __s)
+    : c(__s), comp(__x)
+    { std::make_heap(c.begin(), c.end(), comp); }
+
+    explicit
+    priority_queue(const _Compare& __x, _Sequence&& __s = _Sequence())
+    : c(std::move(__s)), comp(__x)
+    { std::make_heap(c.begin(), c.end(), comp); }
+// ...
+};
+```
+
+在 `priority_queue` 中，它会尝试使用我们指定的比较器和容器类型的默认构造函数来初始化 `priority_queue` 内部的容器对象 `c` 和比较器对象 `comp`，显然的，对于函数对象，可以调用其默认构造函数完成默认初始化。
+
+但是对于函数指针而言，它连一个类都算不上，自然也就没有默认构造函数，因此我们只能显示的指定比较器对象。
+
+### 4. function
+
+在上一节，我们提到了，`priority_queue` 的第三个参数接受的是 **可调用对象** 的类型，而我们知道，`function` 也是一个接受可调用对象的包装器，那么理论上，`function` 可以作为 `priority_queue` 的第三个参数：
+
+``` cpp
+template<typename T>
+bool cmp(const T &a, const T &b) {
+    return a > b;
+}
+
+priority_queue<int, vector<int>, 
+	function<bool(const int&,const int&)>> min_heap(&cmp<int>);
+```
+
+经过测试，没有任何问题。
 
 
 
