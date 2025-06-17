@@ -2959,6 +2959,12 @@ jq 是一个命令行 JSON 处理器，类似于 sed 或 grep，但专门设计�
 
 >[遍历数组](https://blog.csdn.net/Lockey23/article/details/74625744)
 
+# C++
+
+c++filt
+
+cppcheck
+
 # 文本三剑客
 
 [grep、sed、awk](https://www.bilibili.com/video/BV1rA4y1S7Hk/?spm_id_from=333.1387.favlist.content.click&vd_source=38033fe3a1f136728a1d6f8acf710b51)

@@ -1,20 +1,18 @@
-## 185. C++ 代码究竟膨胀在哪里？
+## 189. C++ protected继承意义
 
-https://zhuanlan.zhihu.com/p/686296374
+下面是真实世界实践中 C++ 项目 **protected 继承**和 **private 继承**的情况：
 
+| 项目名称 | 代码行数 | public继承     | private继承  | protected继承 |
+| :------- | :------- | :------------- | :----------- | :------------ |
+| LLVM     | 143万    | 3443次(99.68%) | 10次(0.29%)  | 1次(0.03%)    |
+| Clang    | 90万     | 2373次(98.39%) | 36次(1.49%)  | 3次(0.12%)    |
+| muduo    | 26484    | 27次(100%)     | 0次(0%)      | 0次(0%)       |
+| leveldb  | 20884    | 90次(100%)     | 0次(0%)      | 0次(0%)       |
+| envoy    | 44万     | 3125次(99.64%) | 3次(0.10%)   | 8次(0.26%)    |
+| folly    | 30万     | 859次(94.6%)   | 47次(5.18%)  | 2次(0.22%)    |
+| boost    | 340万    | 6998次(95.66%) | 290次(3.96%) | 18次(0.38%)   |
 
-
-
-
-
-
-
-
-
-
-
-
-
+这与 C++ 社区的一般实践相符，因为 **public 继承** 更符合面向对象的 **"is-a"** 关系，而 **private/protected 继承** 是特殊场景下的工具。
 
 
 
@@ -28,11 +26,7 @@ https://zhuanlan.zhihu.com/p/686296374
 
 
 
-
-
-
-
-## arrregates、POD、trivial、Standard Layout
+## 190. arrregates、POD、trivial、Standard Layout
 
 https://www.zhihu.com/question/472942396/answers/updated
 
@@ -78,214 +72,5 @@ For simple data types use the [`is_standard_layout`](http://en.cppreference.com/
 
 [P0767R1: Deprecate POD](https://www.open-std.org/jtc1/sc22/wg21/docs/papers/2017/p0767r1.html)
 
-##  `std::function` 源码分析
-
-## 默认初始化、值初始化
-
-> ## 101. class对象值初始化BUG
->
-> 看下面的代码：
->
-> ``` c++
-> class Foo {
-> public:
->  Foo() {  }
->  Foo(int _a, int _b, int _c) 
->      : a(_a), b(_b), c(_c) 
->      {
->          cout << "ctor::iii" << endl;
->      }
-> public:
->  short a;
->  int b;
->  double c;
-> };
-> 
-> Foo global;
-> 
-> int main() 
-> {
->  static Foo static_local;
->  Foo local;
->  Foo local_vaue{};
->  cout << global.a << ' ' << global.b << ' ' << global.c << endl;
->  cout << static_local.a << ' ' << static_local.b << ' ' << static_local.c << endl;
->  cout << local_vaue.a << ' ' << local_vaue.b << ' ' << local_vaue.c << endl;
->  cout << local.a << ' ' << local.b << ' ' << local.c << endl;
->  return 0;
-> }
-> ```
->
-> 输出结果为：
->
-> ``` shell
-> 0 0 0
-> 0 0 0
-> 27751 779647075 2.11653e+214
-> 27751 779647075 3.64265e-319
-> ```
->
-> 我们发现 `local` 对象和 `local_value` 对象的值是无意义的，对于 `local` 对象的结果我们可以预料，但在第 `100` 节我们讲过，值初始化的对象，基本类型的值应该为 `0` 才对，为什么这里是无意义的值呢？
->
-> 我们修改一下代码：
->
-> ``` c++
-> #include "header.h"
-> 
-> using namespace std;
-> 
-> class Foo {
-> public:
->  // Foo() {  }
->  // Foo(int _a, int _b, int _c) 
->  //     : a(_a), b(_b), c(_c) 
->  //     {
->  //         cout << "ctor::iii" << endl;
->  //     }
-> public:
->  short a;
->  int b;
->  double c;
-> };
-> 
-> Foo global;
-> 
-> int main() 
-> {
->  static Foo static_local;
->  Foo local;
->  Foo local_vaue{};
->  cout << global.a << ' ' << global.b << ' ' << global.c << endl;
->  cout << static_local.a << ' ' << static_local.b << ' ' << static_local.c << endl;
->  cout << local_vaue.a << ' ' << local_vaue.b << ' ' << local_vaue.c << endl;
->  cout << local.a << ' ' << local.b << ' ' << local.c << endl;
->  return 0;
-> }
-> ```
->
-> 注释掉我们自己定义的两个构造函数，再次观察结果：
->
-> ``` c++
-> 0 0 0
-> 0 0 0
-> 0 0 0
-> 27751 779647075 2.11653e+214
-> ```
->
-> 可以发现，此时 `local_value` 对象的值是正常的，全部为 `0`。
->
-> 我们再次修改代码：
->
-> ``` c++
-> class Foo {
-> public:
->  Foo() = default;
->  Foo(int _a, int _b, int _c) 
->      : a(_a), b(_b), c(_c) 
->      {
->          cout << "ctor::iii" << endl;
->      }
-> public:
->  short a;
->  int b;
->  double c;
-> };
-> 
-> Foo global;
-> 
-> int main() 
-> {
->  static Foo static_local;
->  Foo local;
->  Foo local_vaue{};
->  cout << global.a << ' ' << global.b << ' ' << global.c << endl;
->  cout << static_local.a << ' ' << static_local.b << ' ' << static_local.c << endl;
->  cout << local_vaue.a << ' ' << local_vaue.b << ' ' << local_vaue.c << endl;
->  cout << local.a << ' ' << local.b << ' ' << local.c << endl;
->  return 0;
-> }
-> ```
->
-> 将我们原本自己定义的默认构造函数 `Foo() {}` 修改为系统为我们提供的默认构造函数 `Foo() = default;`
->
-> 再次观察结果：
->
-> ``` C++
-> 0 0 0
-> 0 0 0
-> 0 0 0
-> 27751 779647075 3.64265e-319
-> ```
->
-> 可以发现，此时 `local_value` 对象的值也是正确的。
->
-> 其实通过对比也可以发现，问题就出现在我们自定义的默认构造函数 `Foo(){}` 上，它没有对我们的基本类型对象进行正确的初始化。
->
-> 按理来说，我们自定义的 `Foo(){}` 和 `=default` 生成的构造函数应该相同啊？
->
-> C++ Prime 7.5.1 节说到，如果我们没有在初始值列表显示的初始化成员变量的话，则该成员将在构造函数体之前执行“默认初始化”。而对于局部变量，基础类型在默认初始化下的值是未定义的。因此这里的 `local_value` 对象输出的值是未定义的。
->
-> 所以说，停止你的UB行为！请你在构造函数中初始化成员变量，而不是依赖于编译器。
->
-> 
->
-> ---
->
-> 
->
-> ## 值初始化
->
-> ```c++
-> class Foo {
-> public:
->  Foo() {}    // 注释掉呢？
->  int x, y;
-> };
-> 
-> int main() 
-> {
->  vector<Foo> a(10);
->  for(int i = 0; i < 10; i ++ ) {
->      cout << a[i].x - a[i].y << endl;
->  }
->  Foo b;
->  cout << b.x << ' ' << b.y << endl;
->  Foo c{};
->  cout << c.x << ' ' << c.y << endl;
->  return 0;
-> }
-> 
-> ```
->
-> 值初始化并不总是意味着0初始化
->
-> ----
->
-> ## 107. 合成默认构造函数
->
-> 如果类内没有显示声明一个构造函数，编译器会合成一个默认构造函数。该构造函数会检查类的数据成员，如果有类内初始值就用它执行初始化操作，否则就执行默认初始化。
-
-## C++ protected继承意义
-
-下面是真实世界实践中 C++ 项目 **protected 继承**和 **private 继承**的情况：
-
-| 项目名称 | 代码行数 | public继承     | private继承  | protected继承 |
-| :------- | :------- | :------------- | :----------- | :------------ |
-| LLVM     | 143万    | 3443次(99.68%) | 10次(0.29%)  | 1次(0.03%)    |
-| Clang    | 90万     | 2373次(98.39%) | 36次(1.49%)  | 3次(0.12%)    |
-| muduo    | 26484    | 27次(100%)     | 0次(0%)      | 0次(0%)       |
-| leveldb  | 20884    | 90次(100%)     | 0次(0%)      | 0次(0%)       |
-| envoy    | 44万     | 3125次(99.64%) | 3次(0.10%)   | 8次(0.26%)    |
-| folly    | 30万     | 859次(94.6%)   | 47次(5.18%)  | 2次(0.22%)    |
-| boost    | 340万    | 6998次(95.66%) | 290次(3.96%) | 18次(0.38%)   |
-
-这与 C++ 社区的一般实践相符，因为 **public 继承** 更符合面向对象的 **"is-a"** 关系，而 **private/protected 继承** 是特殊场景下的工具。
-
-
-
-## 动态链接库的命名冲突
-
-https://zhuanlan.zhihu.com/p/354694011
-
-
+##  
 
