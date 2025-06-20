@@ -1,3 +1,15 @@
+## 190. Memory Order
+
+
+
+
+
+
+
+
+
+
+
 
 
 ## C++ protected 继承意义
@@ -22,11 +34,11 @@
 
 
 
+## Reflection
 
+https://zhuanlan.zhihu.com/p/456982033?share_code=jcaA0cvywMY7&utm_psn=1890557889598432770
 
-## Memory Barrier
-
-
+https://zhuanlan.zhihu.com/p/669358870?share_code=HN8GXtCllrLR&utm_psn=1889970809050730641
 
 
 
